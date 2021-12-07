@@ -6,14 +6,12 @@ import android.os.Bundle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.database.databinding.ActivityMainBinding
-import com.google.android.material.floatingactionbutton.FloatingActionButton
 import kotlinx.coroutines.*
 import android.content.Intent
 import android.content.SharedPreferences
 import android.view.View
 import android.widget.Toast
 import java.io.IOException
-import java.util.prefs.AbstractPreferences
 
 const val USER_ID_KEY = "userId"
 const val BODY_KEY = "body"
@@ -21,6 +19,8 @@ const val TITLE_KEY = "title"
 const val MAX_ID_KEY = "max_id"
 const val PREFERENCES_KEY = "preferences"
 const val HAS_BD_KEY = "has_bd"
+const val LIST_KEY = "list"
+
 
 class MainActivity : AppCompatActivity() {
     lateinit var myRecyclerView: RecyclerView
@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var myPreferences: SharedPreferences
     private var isDatabaseNew = true
 
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -39,21 +40,21 @@ class MainActivity : AppCompatActivity() {
         myRecyclerView = binding.myRecyclerView
         supportActionBar?.hide()
         scope = CoroutineScope(Dispatchers.Default)
-
-        val buttonAdd: FloatingActionButton = binding.floatingActionButton
-        buttonAdd.setOnClickListener {
-            val intent = Intent(this, AddItemActivity::class.java)
-            intent.putExtra("list", myItemsList.toTypedArray())
-            startActivity(intent)
-        }
-
-
-
         myPreferences = getSharedPreferences(PREFERENCES_KEY, Context.MODE_PRIVATE)
         maxId = myPreferences.getInt(MAX_ID_KEY, 0)
-        isDatabaseNew = myPreferences.getBoolean(HAS_BD_KEY,true)
+        isDatabaseNew = myPreferences.getBoolean(HAS_BD_KEY, true)
 
+        if (intent.hasExtra(LIST_KEY)) {
+            unpackBundle()
+            return
+        }
+        refreshData()
 
+        binding.floatingActionButton.setOnClickListener {
+            val intent = Intent(this, AddItemActivity::class.java)
+            intent.putExtra(LIST_KEY, myItemsList.toTypedArray())
+            startActivity(intent)
+        }
 
         binding.refreshDataButton.setOnClickListener {
             isDatabaseNew = true
@@ -63,20 +64,13 @@ class MainActivity : AppCompatActivity() {
             binding.progressBar.visibility = View.VISIBLE
             val editor: SharedPreferences.Editor = myPreferences.edit()
             editor.putInt(MAX_ID_KEY, 0)
-            editor.putBoolean(HAS_BD_KEY,true)
+            editor.putBoolean(HAS_BD_KEY, true)
             editor.apply()
             refreshData()
         }
-
-        if (intent.hasExtra("list")) {
-            unpackBundle()
-            return
-        }
-
-        refreshData()
     }
 
-    private fun refreshData(){
+    private fun refreshData() {
         scope.launch {
             if (!isDatabaseNew) {
                 val result = async(SupervisorJob()) {
@@ -86,6 +80,9 @@ class MainActivity : AppCompatActivity() {
                 if (await != null) {
                     myItemsList = MutableList(await.size) { MyItem(await[it]!!) }
                 }
+                withContext(Dispatchers.Main) {
+                    buildRecyclerView(myItemsList)
+                }
             } else {
                 val resultDelete = async(SupervisorJob()) {
                     MyApp.instance.database.clearAllTables()
@@ -93,7 +90,6 @@ class MainActivity : AppCompatActivity() {
                 resultDelete.await()
                 for (i in 1..numberPosts) {
                     try {
-
                         val result = async(SupervisorJob()) {
                             MyApp.instance.mRetrofit.create(JSONPlaceHolderApi::class.java)
                                 .getPostWithID(i)
@@ -103,27 +99,26 @@ class MainActivity : AppCompatActivity() {
                         maxId = await.id
                         val editor: SharedPreferences.Editor = myPreferences.edit()
                         editor.putInt(MAX_ID_KEY, maxId)
-                        editor.putBoolean(HAS_BD_KEY,false)
+                        editor.putBoolean(HAS_BD_KEY, false)
                         editor.apply()
-                        addItem(await.userId, await.body, await.title)
-
+                        addItem(await.userId, await.body, await.title,false)
 
                     } catch (e: IOException) {
                         withContext(Dispatchers.Main) {
-                            SendToast(resources.getString(R.string.error_message) + e.message)
+                            sendToast(resources.getString(R.string.error_message) + e.message)
                         }
                         return@launch
                     }
                 }
-            }
-            withContext(Dispatchers.Main) {
-                buildRecyclerView(myItemsList)
+                withContext(Dispatchers.Main) {
+                    sendToast(resources.getString(R.string.finish_refreshing_message))
+                }
             }
         }
     }
 
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
-        val list = savedInstanceState.getParcelableArray("list")!!
+        val list = savedInstanceState.getParcelableArray(LIST_KEY)!!
         val list2 = mutableListOf<MyItem>()
         for (item in list) {
             list2.add(item as MyItem)
@@ -134,12 +129,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putParcelableArray("list", myItemsList.toTypedArray())
+        outState.putParcelableArray(LIST_KEY, myItemsList.toTypedArray())
         super.onSaveInstanceState(outState)
     }
 
     private fun unpackBundle() {
-        val list = intent.getParcelableArrayExtra("list")!!
+        val list = intent.getParcelableArrayExtra(LIST_KEY)!!
         val list2 = mutableListOf<MyItem>()
         for (item in list) {
             list2.add(item as MyItem)
@@ -162,11 +157,13 @@ class MainActivity : AppCompatActivity() {
             if (userId == "") {
                 userId = "0"
             }
-            addItem(userId.toInt(), body, title)
+            scope.launch {
+                addItem(userId.toInt(), body, title,true)
+            }
         }
     }
 
-    private fun addItem(userId: Int, body: String?, title: String?) {
+    private fun addItem(userId: Int, body: String?, title: String?, logging: Boolean) {
         val answer = PostDAO()
         answer.title = title
         answer.body = body
@@ -185,18 +182,20 @@ class MainActivity : AppCompatActivity() {
                     editor.putInt(MAX_ID_KEY, maxId)
                     editor.apply()
                     buildRecyclerView(myItemsList)
-                    SendToast(resources.getString(R.string.added_post_message) + (maxId - 1))
+                    if (logging){
+                        sendToast(resources.getString(R.string.added_post_message) + (maxId - 1))
+                    }
                 }
             } catch (e: IOException) {
                 withContext(Dispatchers.Main) {
-                    SendToast(resources.getString(R.string.error_message) + e.message)
+                    sendToast(resources.getString(R.string.error_message) + e.message)
                 }
                 return@launch
             }
         }
     }
 
-    private fun SendToast(message: String) {
+    private fun sendToast(message: String) {
         val duration = Toast.LENGTH_LONG
         Toast.makeText(applicationContext, message, duration).show()
     }
@@ -210,12 +209,12 @@ class MainActivity : AppCompatActivity() {
                 result.await()
                 withContext(Dispatchers.Main) {
                     myItemsList.remove(myItemsList.find { it.index == id })
-                    SendToast(resources.getString(R.string.deleted_post_message))
+                    sendToast(resources.getString(R.string.deleted_post_message))
                     buildRecyclerView(myItemsList)
                 }
             } catch (e: IOException) {
                 withContext(Dispatchers.Main) {
-                    SendToast(resources.getString(R.string.error_message) + e.message)
+                    sendToast(resources.getString(R.string.error_message) + e.message)
                 }
                 return@launch
             }
@@ -225,7 +224,7 @@ class MainActivity : AppCompatActivity() {
     private fun buildRecyclerView(myItems: MutableList<MyItem>) {
         binding.progressBar.visibility = View.INVISIBLE
 
-        myItemsList = myItems;
+        myItemsList = myItems
         val viewManager = LinearLayoutManager(this@MainActivity)
         myRecyclerView.apply {
             layoutManager = viewManager

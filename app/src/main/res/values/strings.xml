@@ -1,6 +1,7 @@
 <resources>
-    <string name="app_name">UseLibs</string>
+    <string name="app_name">Database</string>
     <string name="added_post_message">Post successfully added with id: </string>
     <string name="deleted_post_message">Post successfully deleted</string>
     <string name="error_message">Problem with connection: </string>
+    <string name="finish_refreshing_message">Database refreshed</string>
 </resources>
