@@ -44,12 +44,6 @@ class MainActivity : AppCompatActivity() {
         maxId = myPreferences.getInt(MAX_ID_KEY, 0)
         isDatabaseNew = myPreferences.getBoolean(HAS_BD_KEY, true)
 
-        if (intent.hasExtra(LIST_KEY)) {
-            unpackBundle()
-            return
-        }
-        refreshData()
-
         binding.floatingActionButton.setOnClickListener {
             val intent = Intent(this, AddItemActivity::class.java)
             intent.putExtra(LIST_KEY, myItemsList.toTypedArray())
@@ -68,6 +62,12 @@ class MainActivity : AppCompatActivity() {
             editor.apply()
             refreshData()
         }
+
+        if (intent.hasExtra(LIST_KEY)) {
+            unpackBundle()
+            return
+        }
+        refreshData()
     }
 
     private fun refreshData() {
