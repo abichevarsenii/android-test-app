@@ -8,6 +8,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.example.database.databinding.ActivityMainBinding
 import kotlinx.coroutines.*
 import android.content.Intent
+import android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
 import android.content.SharedPreferences
 import android.view.View
 import android.widget.Toast
@@ -30,7 +31,6 @@ class MainActivity : AppCompatActivity() {
     private var numberPosts = 10
     private var maxId = 0
     private lateinit var myPreferences: SharedPreferences
-    private var isDatabaseNew = true
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,79 +42,92 @@ class MainActivity : AppCompatActivity() {
         scope = CoroutineScope(Dispatchers.Default)
         myPreferences = getSharedPreferences(PREFERENCES_KEY, Context.MODE_PRIVATE)
         maxId = myPreferences.getInt(MAX_ID_KEY, 0)
-        isDatabaseNew = myPreferences.getBoolean(HAS_BD_KEY, true)
 
         binding.floatingActionButton.setOnClickListener {
             val intent = Intent(this, AddItemActivity::class.java)
             intent.putExtra(LIST_KEY, myItemsList.toTypedArray())
+            intent.addFlags(FLAG_ACTIVITY_SINGLE_TOP)
             startActivity(intent)
         }
 
         binding.refreshDataButton.setOnClickListener {
-            isDatabaseNew = true
-            maxId = 0
-            myItemsList.clear()
-            buildRecyclerView(myItemsList)
             binding.progressBar.visibility = View.VISIBLE
-            val editor: SharedPreferences.Editor = myPreferences.edit()
-            editor.putInt(MAX_ID_KEY, 0)
-            editor.putBoolean(HAS_BD_KEY, true)
-            editor.apply()
-            refreshData()
+            val isSuccessfulRefreshData = refreshData()
+            if (isSuccessfulRefreshData) {
+                buildRecyclerView(myItemsList)
+            } else {
+                showData()
+            }
         }
 
         if (intent.hasExtra(LIST_KEY)) {
             unpackBundle()
-            return
-        }
-        refreshData()
-    }
-
-    private fun refreshData() {
-        scope.launch {
-            if (!isDatabaseNew) {
-                val result = async(SupervisorJob()) {
-                    MyApp.instance.database.userDao().getAllPosts()
-                }
-                val await = result.await()
-                if (await != null) {
-                    myItemsList = MutableList(await.size) { MyItem(await[it]!!) }
-                }
-                withContext(Dispatchers.Main) {
-                    buildRecyclerView(myItemsList)
-                }
-            } else {
-                val resultDelete = async(SupervisorJob()) {
-                    MyApp.instance.database.clearAllTables()
-                }
-                resultDelete.await()
-                for (i in 1..numberPosts) {
-                    try {
-                        val result = async(SupervisorJob()) {
-                            MyApp.instance.mRetrofit.create(JSONPlaceHolderApi::class.java)
-                                .getPostWithID(i)
-                        }
-                        val await = result.await()
-
-                        maxId = await.id
-                        val editor: SharedPreferences.Editor = myPreferences.edit()
-                        editor.putInt(MAX_ID_KEY, maxId)
-                        editor.putBoolean(HAS_BD_KEY, false)
-                        editor.apply()
-                        addItem(await.userId, await.body, await.title,false)
-
-                    } catch (e: IOException) {
-                        withContext(Dispatchers.Main) {
-                            sendToast(resources.getString(R.string.error_message) + e.message)
-                        }
-                        return@launch
-                    }
-                }
-                withContext(Dispatchers.Main) {
-                    sendToast(resources.getString(R.string.finish_refreshing_message))
-                }
+        } else {
+            if (!showData()) {
+                refreshData()
             }
         }
+    }
+
+    private fun deleteData() {
+        MyApp.instance.database.userDao().deleteAll()
+        maxId = 0
+        myItemsList.clear()
+        val editor: SharedPreferences.Editor = myPreferences.edit()
+        editor.putInt(MAX_ID_KEY, 0)
+        editor.apply()
+    }
+
+    private fun showData(): Boolean {
+        scope.launch {
+            val result = async(SupervisorJob()) {
+                MyApp.instance.database.userDao().getAllPosts()
+            }
+            val await = result.await()
+            if (await != null) {
+                myItemsList = MutableList(await.size) { MyItem(await[it]!!) }
+            }
+            withContext(Dispatchers.Main) {
+                buildRecyclerView(myItemsList)
+            }
+        }
+        return myItemsList.size > 0
+    }
+
+    private fun refreshData(): Boolean {
+        var isSuccessful = false
+        scope.launch {
+            try {
+                val bufferList = mutableListOf<PostJSON>()
+                for (i in 1..numberPosts) {
+                    val result = async(SupervisorJob()) {
+                        MyApp.instance.mRetrofit.create(JSONPlaceHolderApi::class.java)
+                            .getPostWithID(i)
+                    }
+                    val await = result.await()
+                    bufferList.add(await)
+                    maxId = await.id
+                }
+                deleteData()
+                bufferList.forEach {
+                    val result = async(SupervisorJob()) {
+                        addItem(it.userId, it.body, it.title, false)
+                    }
+                    result.await()
+                }
+                myPreferences.edit().putInt(MAX_ID_KEY, maxId).apply()
+            } catch (e: IOException) {
+                withContext(Dispatchers.Main) {
+                    sendToast(resources.getString(R.string.error_message) + e.message)
+                }
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                sendToast(resources.getString(R.string.finish_refreshing_message))
+            }
+            isSuccessful = true
+        }
+        return isSuccessful
     }
 
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
@@ -158,8 +171,9 @@ class MainActivity : AppCompatActivity() {
                 userId = "0"
             }
             scope.launch {
-                addItem(userId.toInt(), body, title,true)
+                addItem(userId.toInt(), body, title, true)
             }
+            buildRecyclerView(myItemsList)
         }
     }
 
@@ -181,8 +195,7 @@ class MainActivity : AppCompatActivity() {
                     val editor: SharedPreferences.Editor = myPreferences.edit()
                     editor.putInt(MAX_ID_KEY, maxId)
                     editor.apply()
-                    buildRecyclerView(myItemsList)
-                    if (logging){
+                    if (logging) {
                         sendToast(resources.getString(R.string.added_post_message) + (maxId - 1))
                     }
                 }

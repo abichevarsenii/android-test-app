@@ -15,10 +15,11 @@ class AddItemActivity : AppCompatActivity() {
         binding.button.setOnClickListener {
             val intent = Intent(this, MainActivity::class.java)
             val list = this.intent.getParcelableArrayExtra("list")
-            intent.putExtra("list",list)
-            intent.putExtra("title",binding.nameText.text.toString())
-            intent.putExtra("body",binding.bodyText.text.toString())
-            intent.putExtra("userId",binding.userIdText.text.toString())
+            intent.putExtra(LIST_KEY,list)
+            intent.putExtra(TITLE_KEY,binding.nameText.text.toString())
+            intent.putExtra(BODY_KEY,binding.bodyText.text.toString())
+            intent.putExtra(USER_ID_KEY,binding.userIdText.text.toString())
+            intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
             startActivity(intent)
         }
     }
