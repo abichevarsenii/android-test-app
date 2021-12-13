@@ -8,7 +8,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.example.database.databinding.ActivityMainBinding
 import kotlinx.coroutines.*
 import android.content.Intent
-import android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+import android.content.Intent.*
 import android.content.SharedPreferences
 import android.view.View
 import android.widget.Toast
@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private var numberPosts = 10
     private var maxId = 0
     private lateinit var myPreferences: SharedPreferences
+    private val animationDuration = 100L
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,28 +44,79 @@ class MainActivity : AppCompatActivity() {
         myPreferences = getSharedPreferences(PREFERENCES_KEY, Context.MODE_PRIVATE)
         maxId = myPreferences.getInt(MAX_ID_KEY, 0)
 
-        binding.floatingActionButton.setOnClickListener {
+        binding.addItemButton.setOnClickListener {
             val intent = Intent(this, AddItemActivity::class.java)
             intent.putExtra(LIST_KEY, myItemsList.toTypedArray())
-            intent.addFlags(FLAG_ACTIVITY_SINGLE_TOP)
+            intent.addFlags(FLAG_ACTIVITY_CLEAR_TOP or FLAG_ACTIVITY_NEW_TASK)
             startActivity(intent)
         }
 
         binding.refreshDataButton.setOnClickListener {
             binding.progressBar.visibility = View.VISIBLE
-            val isSuccessfulRefreshData = refreshData()
-            if (isSuccessfulRefreshData) {
-                buildRecyclerView(myItemsList)
-            } else {
-                showData()
+            binding.refreshDataButton.isClickable = false
+            scope.launch {
+                if (refreshData()) {
+                    withContext(Dispatchers.Main) {
+                        buildRecyclerView(myItemsList)
+                    }
+                } else {
+                    showData()
+                }
+                withContext(Dispatchers.Main){
+                    binding.refreshDataButton.isClickable = true
+                }
             }
         }
 
+        binding.myRecyclerView.addOnScrollListener( object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                super.onScrollStateChanged(recyclerView, newState)
+                if (newState == RecyclerView.SCROLL_STATE_DRAGGING){
+                    binding.refreshDataButton.animate().alpha(0f).setDuration(animationDuration).start()
+                    binding.addItemButton.animate().setDuration(animationDuration).alpha(0f).start()
+                } else {
+                    binding.refreshDataButton.animate().setDuration(animationDuration).alpha(1f).start()
+                    binding.addItemButton.animate().setDuration(animationDuration).alpha(1f).start()
+                }
+            }
+        })
+
         if (intent.hasExtra(LIST_KEY)) {
             unpackBundle()
+            unpackItem()
         } else {
-            if (!showData()) {
-                refreshData()
+            scope.launch {
+                if (!showData()) {
+                    refreshData()
+                }
+            }
+        }
+    }
+
+    private fun unpackBundle() {
+        val list = intent.getParcelableArrayExtra(LIST_KEY)!!
+        val list2 = mutableListOf<MyItem>()
+        for (item in list) {
+            list2.add(item as MyItem)
+        }
+        myItemsList = list2
+        buildRecyclerView(myItemsList)
+    }
+
+    private fun unpackItem() {
+        if (intent.hasExtra(USER_ID_KEY)) {
+            var userId = intent.getStringExtra(USER_ID_KEY)!!
+            val body = intent.getStringExtra(BODY_KEY)!!
+            val title = intent.getStringExtra(TITLE_KEY)!!
+
+            intent.removeExtra(USER_ID_KEY)
+            intent.removeExtra(BODY_KEY)
+            intent.removeExtra(TITLE_KEY)
+
+            if (userId == "") userId = "0"
+
+            scope.launch {
+                addItem(userId.toInt(), body, title, true)
             }
         }
     }
@@ -73,61 +125,102 @@ class MainActivity : AppCompatActivity() {
         MyApp.instance.database.userDao().deleteAll()
         maxId = 0
         myItemsList.clear()
-        val editor: SharedPreferences.Editor = myPreferences.edit()
-        editor.putInt(MAX_ID_KEY, 0)
-        editor.apply()
+        myPreferences.edit().putInt(MAX_ID_KEY, 0).apply()
     }
 
-    private fun showData(): Boolean {
-        scope.launch {
-            val result = async(SupervisorJob()) {
-                MyApp.instance.database.userDao().getAllPosts()
-            }
-            val await = result.await()
-            if (await != null) {
-                myItemsList = MutableList(await.size) { MyItem(await[it]!!) }
-            }
-            withContext(Dispatchers.Main) {
-                buildRecyclerView(myItemsList)
-            }
+    private suspend fun showData(): Boolean {
+        val await = MyApp.instance.database.userDao().getAllPosts()
+        if (await != null) {
+            myItemsList = MutableList(await.size) { MyItem(await[it]!!) }
+        }
+        withContext(Dispatchers.Main) {
+            buildRecyclerView(myItemsList)
         }
         return myItemsList.size > 0
     }
 
-    private fun refreshData(): Boolean {
-        var isSuccessful = false
-        scope.launch {
-            try {
-                val bufferList = mutableListOf<PostJSON>()
-                for (i in 1..numberPosts) {
-                    val result = async(SupervisorJob()) {
-                        MyApp.instance.mRetrofit.create(JSONPlaceHolderApi::class.java)
-                            .getPostWithID(i)
-                    }
-                    val await = result.await()
-                    bufferList.add(await)
-                    maxId = await.id
-                }
-                deleteData()
-                bufferList.forEach {
-                    val result = async(SupervisorJob()) {
-                        addItem(it.userId, it.body, it.title, false)
-                    }
-                    result.await()
-                }
-                myPreferences.edit().putInt(MAX_ID_KEY, maxId).apply()
-            } catch (e: IOException) {
-                withContext(Dispatchers.Main) {
-                    sendToast(resources.getString(R.string.error_message) + e.message)
-                }
-                return@launch
+    private suspend fun refreshData(): Boolean {
+        try {
+            val bufferList = mutableListOf<PostJSON>()
+            for (i in 1..numberPosts) {
+                val await = MyApp.instance.mRetrofit.create(JSONPlaceHolderApi::class.java).getPostWithID(i)
+                bufferList.add(await)
+                maxId = await.id
             }
+            deleteData()
+            bufferList.forEach { addItem(it.userId, it.body, it.title, false) }
+            myPreferences.edit().putInt(MAX_ID_KEY, maxId++).apply()
+        } catch (e: IOException) {
             withContext(Dispatchers.Main) {
-                sendToast(resources.getString(R.string.finish_refreshing_message))
+                sendToast(resources.getString(R.string.error_message) + e.message)
+                binding.progressBar.visibility = View.INVISIBLE
             }
-            isSuccessful = true
+            return false
         }
-        return isSuccessful
+        withContext(Dispatchers.Main) {
+            sendToast(resources.getString(R.string.finish_refreshing_message))
+        }
+        return true
+    }
+
+    private suspend fun addItem(userId: Int, body: String?, title: String?, logging: Boolean) {
+        try {
+            val answer = PostEntity().apply {
+                this.title = title
+                this.body = body
+                this.userId = userId
+                this.id = maxId
+            }
+            MyApp.instance.database.userDao().insertAll(answer)
+            withContext(Dispatchers.Main) {
+                myItemsList.add(MyItem(title, body, maxId++))
+                myPreferences.edit().putInt(MAX_ID_KEY, maxId).apply()
+                if (logging) {
+                    sendToast(resources.getString(R.string.added_post_message) + (maxId - 1))
+                }
+                buildRecyclerView(myItemsList)
+            }
+        } catch (e: IOException) {
+            withContext(Dispatchers.Main) {
+                sendToast(resources.getString(R.string.error_message) + e.message)
+            }
+        }
+    }
+
+    private suspend fun deleteItem(id: Int) {
+        try {
+            MyApp.instance.database.userDao().delete(PostEntity().apply { this.id = id })
+            withContext(Dispatchers.Main) {
+                myItemsList.remove(myItemsList.find { it.index == id })
+                sendToast(resources.getString(R.string.deleted_post_message))
+                buildRecyclerView(myItemsList)
+            }
+        } catch (e: IOException) {
+            withContext(Dispatchers.Main) {
+                sendToast(resources.getString(R.string.error_message) + e.message)
+            }
+            return
+        }
+    }
+
+    private fun buildRecyclerView(myItems: MutableList<MyItem>) {
+        binding.progressBar.visibility = View.INVISIBLE
+
+        myItemsList = myItems
+        val viewManager = LinearLayoutManager(this@MainActivity)
+        myRecyclerView.apply {
+            layoutManager = viewManager
+            adapter = UserAdapter(myItemsList) {
+                scope.launch {
+                    deleteItem(it.index)
+                }
+            }
+        }
+    }
+
+    private fun sendToast(message: String) {
+        val duration = Toast.LENGTH_LONG
+        Toast.makeText(applicationContext, message, duration).show()
     }
 
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
@@ -144,107 +237,6 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putParcelableArray(LIST_KEY, myItemsList.toTypedArray())
         super.onSaveInstanceState(outState)
-    }
-
-    private fun unpackBundle() {
-        val list = intent.getParcelableArrayExtra(LIST_KEY)!!
-        val list2 = mutableListOf<MyItem>()
-        for (item in list) {
-            list2.add(item as MyItem)
-        }
-
-        myItemsList = list2
-        buildRecyclerView(myItemsList)
-
-
-        if (intent.hasExtra(USER_ID_KEY)) {
-            var userId = intent.getStringExtra(USER_ID_KEY)!!
-
-            val body = intent.getStringExtra(BODY_KEY)!!
-            val title = intent.getStringExtra(TITLE_KEY)!!
-
-            intent.removeExtra(USER_ID_KEY)
-            intent.removeExtra(BODY_KEY)
-            intent.removeExtra(TITLE_KEY)
-
-            if (userId == "") {
-                userId = "0"
-            }
-            scope.launch {
-                addItem(userId.toInt(), body, title, true)
-            }
-            buildRecyclerView(myItemsList)
-        }
-    }
-
-    private fun addItem(userId: Int, body: String?, title: String?, logging: Boolean) {
-        val answer = PostDAO()
-        answer.title = title
-        answer.body = body
-        answer.userId = userId
-        answer.id = maxId
-
-        scope.launch {
-            try {
-                val result = async(SupervisorJob()) {
-                    MyApp.instance.database.userDao().insertAll(answer)
-                }
-                result.await()
-                withContext(Dispatchers.Main) {
-                    myItemsList.add(MyItem(title, body, maxId++))
-                    val editor: SharedPreferences.Editor = myPreferences.edit()
-                    editor.putInt(MAX_ID_KEY, maxId)
-                    editor.apply()
-                    if (logging) {
-                        sendToast(resources.getString(R.string.added_post_message) + (maxId - 1))
-                    }
-                }
-            } catch (e: IOException) {
-                withContext(Dispatchers.Main) {
-                    sendToast(resources.getString(R.string.error_message) + e.message)
-                }
-                return@launch
-            }
-        }
-    }
-
-    private fun sendToast(message: String) {
-        val duration = Toast.LENGTH_LONG
-        Toast.makeText(applicationContext, message, duration).show()
-    }
-
-    private fun deleteItem(id: Int) {
-        scope.launch {
-            try {
-                val result = async(SupervisorJob()) {
-                    MyApp.instance.database.userDao().delete(PostDAO().apply { this.id = id })
-                }
-                result.await()
-                withContext(Dispatchers.Main) {
-                    myItemsList.remove(myItemsList.find { it.index == id })
-                    sendToast(resources.getString(R.string.deleted_post_message))
-                    buildRecyclerView(myItemsList)
-                }
-            } catch (e: IOException) {
-                withContext(Dispatchers.Main) {
-                    sendToast(resources.getString(R.string.error_message) + e.message)
-                }
-                return@launch
-            }
-        }
-    }
-
-    private fun buildRecyclerView(myItems: MutableList<MyItem>) {
-        binding.progressBar.visibility = View.INVISIBLE
-
-        myItemsList = myItems
-        val viewManager = LinearLayoutManager(this@MainActivity)
-        myRecyclerView.apply {
-            layoutManager = viewManager
-            adapter = UserAdapter(myItemsList) {
-                deleteItem(it.index)
-            }
-        }
     }
 
     override fun onDestroy() {

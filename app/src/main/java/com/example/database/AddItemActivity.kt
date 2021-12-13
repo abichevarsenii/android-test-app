@@ -1,6 +1,7 @@
 package com.example.database
 
 import android.content.Intent
+import android.content.Intent.*
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import com.example.database.databinding.ActivityAddItemActivityBinding
@@ -19,7 +20,7 @@ class AddItemActivity : AppCompatActivity() {
             intent.putExtra(TITLE_KEY,binding.nameText.text.toString())
             intent.putExtra(BODY_KEY,binding.bodyText.text.toString())
             intent.putExtra(USER_ID_KEY,binding.userIdText.text.toString())
-            intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            intent.addFlags(FLAG_ACTIVITY_CLEAR_TOP or FLAG_ACTIVITY_NEW_TASK)
             startActivity(intent)
         }
     }

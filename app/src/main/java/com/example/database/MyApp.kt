@@ -18,9 +18,9 @@ class MyApp : Application() {
     lateinit var mRetrofit: Retrofit
     lateinit var database: AppDatabase
 
-    @Database(entities = [PostDAO::class], version = 1)
+    @Database(entities = [PostEntity::class], version = 1)
     abstract class AppDatabase : RoomDatabase() {
-        abstract fun userDao(): RoomApi
+        abstract fun userDao(): PostDAO
     }
 
     override fun onCreate() {

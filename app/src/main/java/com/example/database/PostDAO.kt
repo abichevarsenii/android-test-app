@@ -1,14 +1,22 @@
 package com.example.database
 
-import androidx.room.Entity
-import androidx.room.PrimaryKey
-import com.squareup.moshi.Json
+import androidx.room.*
 
-@Entity
-class PostDAO {
-    @PrimaryKey
-    var id = 0
-    var userId = 0
-    var title: String? = null
-    var body: String? = null
+
+@Dao
+interface PostDAO {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(vararg people: PostEntity?)
+
+    @Delete
+    suspend fun delete(person: PostEntity?)
+
+    @Query("SELECT * FROM PostEntity")
+    fun getAllPosts(): List<PostEntity?>?
+
+    @Query("SELECT * FROM PostEntity WHERE id LIKE :id")
+    suspend fun getById(id: Int): List<PostEntity?>?
+
+    @Query("DELETE FROM PostEntity")
+    fun deleteAll()
 }
